@@ -1,2 +1,8 @@
-# factset-market-dashboard
-FactSet Market Dashboard with direct email ingestion and realtime market parsing.
+# FactSet Market Dashboard
+
+Standalone Next.js dashboard for parsing FactSet market alert emails into a live, searchable market view.
+
+Endpoints:
+- /api/ingest
+- /api/alerts
+- /api/stream

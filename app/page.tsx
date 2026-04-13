@@ -251,10 +251,11 @@ export default function Page() {
     for (const alert of alerts) {
       const d = new Date(alert.receivedAt);
       const label = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' }).format(d);
-      const current = buckets.get(label) ?? { label, alerts: 0, macro: 0, target: 0, sector: 0, confidence: 0 };
+      const current = buckets.get(label) ?? { label, sortKey: d.getTime(), alerts: 0, macro: 0, target: 0, sector: 0, general: 0, confidence: 0 };
       current.alerts += 1;
       current.confidence += alert.confidence;
-      current[alert.type] += 1;
+      if (alert.type !== 'general') current[alert.type] += 1;
+      else current.general += 1;
       buckets.set(label, current);
     }
 

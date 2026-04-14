@@ -284,7 +284,7 @@ function ChainModal({
   alert: FactSetAlert;
   onClose: () => void;
 }) {
-  const chains = alert.effectChains ?? [];
+  const chains = ((alert as any).effectChains ?? []) as any[];
   const [selected, setSelected] = useState(0);
 
   useEffect(() => {

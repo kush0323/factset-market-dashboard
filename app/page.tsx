@@ -1,16 +1,15 @@
 "use client";
 
-import { useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import type { FactSetAlert } from '@/lib/factset';
 
 type AlertsResponse = { updatedAt: string; alerts: FactSetAlert[] };
 
-const tabs = ['all', 'macro', 'sector', 'target', 'general'] as const;
-type Tab = (typeof tabs)[number];
+type Tab = 'all' | FactSetAlert['type'];
+const tabs: Tab[] = ['all', 'macro', 'sector', 'target', 'general'];
 
 type SectorPoint = {
   name: string;
-  count: number;
   score: number;
   confidence: number;
 };
@@ -19,11 +18,19 @@ type TimelinePoint = {
   label: string;
   sortKey: number;
   alerts: number;
-  macro: number;
-  target: number;
-  sector: number;
-  general: number;
   confidence: number;
+  macro: number;
+  sector: number;
+  target: number;
+  general: number;
+};
+
+type AlertLens = {
+  title: string;
+  summary: string;
+  whyItMatters: string;
+  plainAction: string;
+  chips: string[];
 };
 
 function fmt(ts: string) {
@@ -37,15 +44,15 @@ function fmt(ts: string) {
   }).format(new Date(ts));
 }
 
-function shortDay(ts: string) {
+function dayLabel(ts: string) {
   return new Intl.DateTimeFormat('en-US', { weekday: 'short', month: 'short', day: 'numeric' }).format(new Date(ts));
 }
 
 function typeLabel(type: FactSetAlert['type']) {
-  if (type === 'macro') return 'Macro driver';
-  if (type === 'sector') return 'Sector tape';
-  if (type === 'target') return 'Analyst target';
-  return 'Market note';
+  if (type === 'macro') return 'Macro';
+  if (type === 'sector') return 'Sector';
+  if (type === 'target') return 'Analyst';
+  return 'General';
 }
 
 function biasTone(bias: FactSetAlert['marketBias']) {
@@ -58,105 +65,341 @@ function clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n));
 }
 
-function hashHue(value: string) {
-  let hash = 0;
-  for (let i = 0; i < value.length; i += 1) hash = (hash * 31 + value.charCodeAt(i)) >>> 0;
-  return 195 + (hash % 95);
+function lensFor(alert: FactSetAlert): AlertLens {
+  if (alert.type === 'macro') {
+    return {
+      title: 'Supply shock hits the real economy first',
+      summary: 'A shipping or oil shock gets repriced through fuel, freight, and higher input costs.',
+      whyItMatters: 'This is usually the fastest path from headlines to pricing pressure, especially in transports and cyclical names.',
+      plainAction: 'Watch energy strength, transport weakness, and any new inflation hedge bid.',
+      chips: [...alert.tickers.slice(0, 3), ...alert.sectors.slice(0, 2)],
+    };
+  }
+
+  if (alert.type === 'sector') {
+    return {
+      title: 'The market is rotating between groups',
+      summary: 'Capital is moving toward the strongest sectors and away from the weakest ones.',
+      whyItMatters: 'Rotation tells you where traders want exposure even when the broader tape is mixed.',
+      plainAction: 'Favor the leaders until relative strength fades.',
+      chips: [...alert.tickers.slice(0, 3), ...alert.sectors.slice(0, 2)],
+    };
+  }
+
+  if (alert.type === 'target') {
+    return {
+      title: 'Wall Street changed expectations',
+      summary: 'Upgrades, downgrades, and target changes can move stocks before the business itself changes.',
+      whyItMatters: 'These revisions shift the starting point for valuation and near-term sentiment.',
+      plainAction: 'Treat upgrades as support and downgrades as pressure until the tape proves otherwise.',
+      chips: [...alert.tickers.slice(0, 3), ...alert.sectors.slice(0, 2)],
+    };
+  }
+
+  return {
+    title: 'Market context, not the cleanest trade',
+    summary: 'Useful background, but usually less actionable than a shock headline or fresh revision.',
+    whyItMatters: 'This helps explain the tape without forcing a trade if the signal is soft.',
+    plainAction: 'Use it as context and wait for the next stronger catalyst.',
+    chips: [...alert.tickers.slice(0, 3), ...alert.sectors.slice(0, 2)],
+  };
 }
 
-function TrendSparkline({ points }: { points: TimelinePoint[] }) {
-  const width = 640;
-  const height = 220;
-  const padding = 20;
+function buildTimeline(alerts: FactSetAlert[]): TimelinePoint[] {
+  const buckets = new Map<string, TimelinePoint>();
+  for (const alert of [...alerts].sort((a, b) => +new Date(a.receivedAt) - +new Date(b.receivedAt))) {
+    const label = dayLabel(alert.receivedAt).split(', ')[1] || dayLabel(alert.receivedAt);
+    const current = buckets.get(label) ?? { label, sortKey: +new Date(alert.receivedAt), alerts: 0, confidence: 0, macro: 0, sector: 0, target: 0, general: 0 };
+    current.alerts += 1;
+    current.confidence += alert.confidence;
+    if (alert.type !== 'general') current[alert.type] += 1;
+    else current.general += 1;
+    current.sortKey = Math.min(current.sortKey, +new Date(alert.receivedAt));
+    buckets.set(label, current);
+  }
 
-  const chart = useMemo(() => {
-    const maxAlerts = Math.max(1, ...points.map((p) => p.alerts));
-    const maxConfidence = Math.max(1, ...points.map((p) => p.confidence));
-    const maxMacro = Math.max(1, ...points.map((p) => p.macro));
-    const maxTarget = Math.max(1, ...points.map((p) => p.target));
-    const maxSector = Math.max(1, ...points.map((p) => p.sector));
+  const list = Array.from(buckets.values()).sort((a, b) => a.sortKey - b.sortKey);
+  if (list.length >= 2) return list.slice(-8);
 
-    const scale = (value: number, max: number) => padding + (height - padding * 2) * (1 - value / max);
-    const xAt = (index: number) => padding + (width - padding * 2) * (index / Math.max(1, points.length - 1));
+  return [
+    { label: 'Mon', sortKey: 1, alerts: 2, confidence: 1.8, macro: 1, sector: 1, target: 0, general: 0 },
+    { label: 'Tue', sortKey: 2, alerts: 3, confidence: 2.6, macro: 1, sector: 1, target: 1, general: 0 },
+    { label: 'Wed', sortKey: 3, alerts: 2, confidence: 1.9, macro: 0, sector: 1, target: 1, general: 0 },
+    { label: 'Thu', sortKey: 4, alerts: 4, confidence: 3.3, macro: 1, sector: 2, target: 1, general: 0 },
+    { label: 'Fri', sortKey: 5, alerts: 3, confidence: 2.7, macro: 1, sector: 1, target: 1, general: 0 },
+  ];
+}
 
-    const build = (selector: (p: TimelinePoint) => number, max: number) =>
-      points.map((point, index) => `${xAt(index)},${scale(selector(point), max)}`).join(' ');
+function buildHeatmap(alerts: FactSetAlert[]): SectorPoint[] {
+  const sectors = new Map<string, { score: number; confidence: number; count: number }>();
+  for (const alert of alerts) {
+    const signal = alert.marketBias === 'risk-on' ? 1 : alert.marketBias === 'risk-off' ? -1 : 0.25;
+    for (const sector of alert.sectors) {
+      const current = sectors.get(sector) ?? { score: 0, confidence: 0, count: 0 };
+      current.score += signal * alert.confidence;
+      current.confidence += alert.confidence;
+      current.count += 1;
+      sectors.set(sector, current);
+    }
+  }
 
-    return {
-      alerts: build((p) => p.alerts, maxAlerts),
-      confidence: build((p) => p.confidence, maxConfidence),
-      macro: build((p) => p.macro, maxMacro),
-      target: build((p) => p.target, maxTarget),
-      sector: build((p) => p.sector, maxSector),
-      gridX: Array.from({ length: 6 }, (_, i) => padding + ((width - padding * 2) / 5) * i),
-      gridY: Array.from({ length: 5 }, (_, i) => padding + ((height - padding * 2) / 4) * i),
-    };
-  }, [points]);
+  const base = ['Energy', 'Consumer Discretionary', 'Information Technology', 'Industrials', 'Real Estate', 'Healthcare'];
+  return base.map((name) => {
+    const item = sectors.get(name);
+    const score = item ? item.score / Math.max(1, item.count) : name === 'Energy' ? -0.74 : 0.42;
+    const confidence = item ? item.confidence / Math.max(1, item.count) : 0.88;
+    return { name, score, confidence };
+  });
+}
 
-  return (
-    <svg viewBox={`0 0 ${width} ${height}`} className="trend-chart" aria-label="Trend lines for the live FactSet feed">
-      {chart.gridY.map((y) => <line key={y} x1={padding} x2={width - padding} y1={y} y2={y} className="chart-grid" />)}
-      {chart.gridX.map((x) => <line key={x} y1={padding} y2={height - padding} x1={x} x2={x} className="chart-grid subtle" />)}
-      <polyline points={chart.alerts} className="trend-line trend-alerts" />
-      <polyline points={chart.macro} className="trend-line trend-macro" />
-      <polyline points={chart.target} className="trend-line trend-target" />
-      <polyline points={chart.sector} className="trend-line trend-sector" />
-      <polyline points={chart.confidence} className="trend-line trend-confidence" />
-      {points.map((point, index) => {
-        const x = padding + ((width - padding * 2) * index) / Math.max(1, points.length - 1);
-        const y = height - padding - clamp(point.confidence, 0, 10) * 14;
-        return <circle key={`${point.label}-${index}`} cx={x} cy={y} r={2.5} className="trend-dot" />;
-      })}
-    </svg>
+function buildCorrelation(alerts: FactSetAlert[]) {
+  const sectors = Array.from(new Set(alerts.flatMap((a) => a.sectors))).slice(0, 5);
+  const counts = new Map<string, number>();
+  for (const alert of alerts) {
+    for (const sector of alert.sectors) counts.set(sector, (counts.get(sector) ?? 0) + 1);
+  }
+
+  return sectors.map((row) =>
+    sectors.map((col) => {
+      const co = alerts.filter((alert) => alert.sectors.includes(row) && alert.sectors.includes(col)).length;
+      const denom = Math.sqrt((counts.get(row) ?? 1) * (counts.get(col) ?? 1));
+      return clamp(co / Math.max(1, denom), 0, 1);
+    })
   );
 }
 
-function MiniHeatCell({ name, score, confidence }: SectorPoint) {
-  const value = clamp(score, -1, 1);
-  const intensity = Math.abs(value);
-  const hue = value >= 0 ? 165 : 350;
-  const bg = `linear-gradient(180deg, hsla(${hue}, 85%, ${42 + intensity * 8}%, ${0.25 + intensity * 0.5}), hsla(${hue}, 85%, ${38 + intensity * 6}%, ${0.18 + intensity * 0.25}))`;
-  const glow = `0 0 ${intensity * 20 + 6}px hsla(${hue}, 85%, 58%, ${0.25 + intensity * 0.25})`;
+function chartPath(points: TimelinePoint[], pick: (p: TimelinePoint) => number, height: number) {
+  const width = 460;
+  const padding = 18;
+  const max = Math.max(1, ...points.map(pick));
+  const xAt = (i: number) => padding + ((width - padding * 2) * i) / Math.max(1, points.length - 1);
+  const yAt = (value: number) => padding + (height - padding * 2) * (1 - value / max);
+  return points.map((point, i) => `${xAt(i)},${yAt(pick(point))}`).join(' ');
+}
+
+function buildAlpha(alerts: FactSetAlert[]) {
+  return [...alerts]
+    .sort((a, b) => b.confidence - a.confidence)
+    .slice(0, 3)
+    .map((alert) => ({ alert, lens: lensFor(alert) }));
+}
+
+function CardButton({
+  alert,
+  lens,
+  onOpen,
+}: {
+  alert: FactSetAlert;
+  lens: AlertLens;
+  onOpen: () => void;
+}) {
   return (
-    <div className="heat-cell" style={{ background: bg, boxShadow: glow }}>
-      <div className="heat-name">{name}</div>
-      <div className="heat-score">{score > 0 ? '+' : ''}{score.toFixed(2)}%</div>
-      <div className="heat-meta">{Math.round(confidence * 100)}% conviction</div>
+    <button className="alpha-card" type="button" onClick={onOpen} title="Open effect chain">
+      <div className="card-top">
+        <div className={`badge ${alert.type}`}>{typeLabel(alert.type)}</div>
+        <div className="card-time">{fmt(alert.receivedAt)}</div>
+      </div>
+      <h3>{lens.title}</h3>
+      <p>{lens.summary}</p>
+      <div className="mini-action">{lens.plainAction}</div>
+      <div className="pill-row compact">
+        {lens.chips.map((chip) => (
+          <span key={chip} className="pill">
+            {chip}
+          </span>
+        ))}
+      </div>
+    </button>
+  );
+}
+
+function FeedCard({ alert, onOpen }: { alert: FactSetAlert; onOpen: () => void }) {
+  const lens = lensFor(alert);
+  return (
+    <button className="feed-card" type="button" onClick={onOpen}>
+      <div className="card-top">
+        <div className={`badge ${alert.type}`}>{typeLabel(alert.type)}</div>
+        <div className="card-time">{fmt(alert.receivedAt)}</div>
+      </div>
+      <h3>{alert.subject}</h3>
+      <p>{alert.summary}</p>
+      <div className="mini-action">{lens.plainAction}</div>
+      <div className="feed-footline">
+        <span>Impact</span>
+        <strong>{alert.impact}</strong>
+      </div>
+    </button>
+  );
+}
+
+function Heatmap({ points }: { points: SectorPoint[] }) {
+  return (
+    <div className="heat-grid">
+      {points.map((point) => {
+        const intensity = Math.abs(point.score);
+        const tone = point.score >= 0 ? 'positive' : 'negative';
+        return (
+          <div
+            key={point.name}
+            className={`heat-tile ${tone}`}
+            style={{ boxShadow: `0 0 ${8 + intensity * 18}px rgba(115,239,255,${0.12 + intensity * 0.18})` }}
+          >
+            <div className="heat-name">{point.name}</div>
+            <div className="heat-value">{point.score > 0 ? '+' : ''}{point.score.toFixed(2)}%</div>
+            <div className="heat-sub">{Math.round(point.confidence * 100)}% conviction</div>
+          </div>
+        );
+      })}
     </div>
   );
 }
 
-function AlertCard({ item }: { item: FactSetAlert }) {
+function CorrelationMatrix({ matrix, sectors }: { matrix: number[][]; sectors: string[] }) {
   return (
-    <article className="card alert-card">
-      <div className="card-head">
-        <div>
-          <div className={`badge ${item.type}`}>{typeLabel(item.type)}</div>
-          <h3>{item.subject}</h3>
+    <div className="corr-grid">
+      <div className="corr-corner" />
+      {sectors.map((sector) => (
+        <div key={`h-${sector}`} className="corr-head">
+          {sector}
         </div>
-        <div className="small">{fmt(item.receivedAt)}</div>
+      ))}
+      {matrix.map((row, rowIndex) => (
+        <Fragment key={sectors[rowIndex]}>
+          <div className="corr-row-head">{sectors[rowIndex]}</div>
+          {row.map((value, colIndex) => (
+            <div key={`${sectors[rowIndex]}-${sectors[colIndex]}`} className="corr-cell" style={{ background: `rgba(115,239,255,${0.08 + value * 0.38})` }}>
+              {Math.round(value * 100)}
+            </div>
+          ))}
+        </Fragment>
+      ))}
+    </div>
+  );
+}
+
+function ChainModal({
+  alert,
+  onClose,
+}: {
+  alert: FactSetAlert;
+  onClose: () => void;
+}) {
+  const chains = alert.effectChains ?? [];
+  const [selected, setSelected] = useState(0);
+
+  useEffect(() => {
+    setSelected(0);
+  }, [alert.id]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [onClose]);
+
+  const activeChain = chains[selected] ?? chains[0];
+
+  return (
+    <div className="modal-backdrop" onClick={onClose} role="presentation">
+      <div className="modal-shell" onClick={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-label="Effect chain explorer">
+        <div className="modal-head">
+          <div>
+            <div className={`badge ${alert.type}`}>{typeLabel(alert.type)}</div>
+            <h2>{alert.subject}</h2>
+            <p>{lensFor(alert).summary}</p>
+          </div>
+          <button className="close-btn" type="button" onClick={onClose}>
+            Close
+          </button>
+        </div>
+
+        <div className="modal-status">
+          <span className={`status-pill ${alert.chainValidation.status}`}>Validation: {alert.chainValidation.status}</span>
+          <span className="status-pill">Verified chains: {alert.chainValidation.verifiedCount}</span>
+          <span className="status-pill">Confidence: {Math.round(alert.confidence * 100)}%</span>
+          <span className="status-pill">Received: {fmt(alert.receivedAt)}</span>
+        </div>
+
+        <div className="modal-grid">
+          <aside className="chain-list">
+            <div className="side-label">Validated effect chains</div>
+            {chains.length ? (
+              chains.map((chain, index) => (
+                <button
+                  key={chain.id}
+                  type="button"
+                  className={`chain-switch ${selected === index ? 'active' : ''}`}
+                  onClick={() => setSelected(index)}
+                >
+                  <strong>{chain.title}</strong>
+                  <span>{chain.summary}</span>
+                </button>
+              ))
+            ) : (
+              <div className="chain-empty">
+                No validated chain yet.
+                <span>{alert.chainValidation.notes.join(' • ')}</span>
+              </div>
+            )}
+          </aside>
+
+          <section className="modal-body">
+            {activeChain ? (
+              <>
+                <div className="chain-summary">
+                  <div className={`badge ${alert.type}`}>Interactive effect chain</div>
+                  <h3>{activeChain.title}</h3>
+                  <p>{activeChain.summary}</p>
+                  <div className="pill-row compact">
+                    {activeChain.grounding.map((item) => (
+                      <span key={item} className="pill">
+                        {item}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="step-stack">
+                  {activeChain.steps.map((step, index) => (
+                    <div key={step.label} className="step-card">
+                      <div className="step-index">{index + 1}</div>
+                      <div>
+                        <div className="step-label">{step.label}</div>
+                        <div className="step-detail">{step.detail}</div>
+                        <div className="step-meta">Evidence: {step.evidence}</div>
+                        <div className="step-meta">Theory: {step.theory}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="validation-box">
+                  <strong>Why this chain is allowed to display</strong>
+                  <p>{activeChain.validationNotes.join(' • ') || 'Validated against the alert subject, summary, and macro/sector theory templates.'}</p>
+                </div>
+              </>
+            ) : (
+              <div className="validation-box">
+                <strong>No validated chain available yet</strong>
+                <p>{alert.chainValidation.notes.join(' • ')}</p>
+              </div>
+            )}
+          </section>
+        </div>
       </div>
-      <p>{item.summary}</p>
-      <div className="pill-row">
-        {item.tickers.slice(0, 5).map((ticker) => <span key={ticker} className="pill">{ticker}</span>)}
-        {item.sectors.slice(0, 4).map((sectorName) => <span key={sectorName} className="pill">{sectorName}</span>)}
-      </div>
-      <div className="statline"><strong>Impact</strong><span>{item.impact}</span></div>
-      <div className="statline"><strong>Confidence</strong><span>{Math.round(item.confidence * 100)}%</span></div>
-      <div className="tone-line">
-        <span className={`tone-dot ${biasTone(item.marketBias)}`} />
-        <span>{item.marketBias === 'risk-on' ? 'Risk-on' : item.marketBias === 'risk-off' ? 'Risk-off' : 'Mixed'} reading</span>
-      </div>
-    </article>
+    </div>
   );
 }
 
 export default function Page() {
   const [alerts, setAlerts] = useState<FactSetAlert[]>([]);
-  const [query, setQuery] = useState('');
-  const [tab, setTab] = useState<Tab>('all');
   const [updatedAt, setUpdatedAt] = useState('');
   const [connection, setConnection] = useState<'connecting' | 'live' | 'polling'>('connecting');
+  const [query, setQuery] = useState('');
+  const [tab, setTab] = useState<Tab>('all');
+  const [selectedAlertId, setSelectedAlertId] = useState<string | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -183,8 +426,7 @@ export default function Page() {
       setConnection('live');
     };
     source.onmessage = (event) => {
-      const data = JSON.parse(event.data) as AlertsResponse;
-      apply(data);
+      apply(JSON.parse(event.data) as AlertsResponse);
     };
     source.onerror = () => {
       if (!alive) return;
@@ -199,160 +441,118 @@ export default function Page() {
     };
   }, []);
 
+  useEffect(() => {
+    if (selectedAlertId && !alerts.some((alert) => alert.id === selectedAlertId)) {
+      setSelectedAlertId(null);
+    }
+  }, [alerts, selectedAlertId]);
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return alerts.filter((a) => {
-      const tabOk = tab === 'all' || a.type === tab;
-      const queryOk = !q || [a.subject, a.summary, a.impact, a.tickers.join(' '), a.sectors.join(' ')].join(' ').toLowerCase().includes(q);
+    return alerts.filter((alert) => {
+      const tabOk = tab === 'all' || alert.type === tab;
+      const queryOk = !q || [alert.subject, alert.summary, alert.impact, alert.tickers.join(' '), alert.sectors.join(' ')].join(' ').toLowerCase().includes(q);
       return tabOk && queryOk;
     });
   }, [alerts, query, tab]);
 
-  const macro = alerts.find((a) => a.type === 'macro');
-  const sector = alerts.find((a) => a.type === 'sector');
-  const target = alerts.find((a) => a.type === 'target');
-
-  const sectors = useMemo<SectorPoint[]>(() => {
-    const map = new Map<string, { score: number; confidence: number; count: number }>();
-    for (const alert of alerts) {
-      const score = alert.marketBias === 'risk-on' ? 1 : alert.marketBias === 'risk-off' ? -1 : 0.25;
-      for (const s of alert.sectors) {
-        const current = map.get(s) ?? { score: 0, confidence: 0, count: 0 };
-        current.score += score * alert.confidence;
-        current.confidence += alert.confidence;
-        current.count += 1;
-        map.set(s, current);
-      }
-    }
-
-    const results = Array.from(map.entries()).map(([name, data]) => ({
-      name,
-      count: data.count,
-      score: data.score / Math.max(1, data.count),
-      confidence: data.confidence / Math.max(1, data.count),
-    }));
-
-    const fallback = [
-      { name: 'Energy', score: -0.74, confidence: 0.98, count: 2 },
-      { name: 'Consumer Discretionary', score: 0.61, confidence: 0.96, count: 2 },
-      { name: 'Information Technology', score: 0.48, confidence: 0.94, count: 2 },
-      { name: 'Industrials', score: 0.39, confidence: 0.92, count: 2 },
-      { name: 'Real Estate', score: 0.22, confidence: 0.94, count: 3 },
-      { name: 'Healthcare', score: 0.13, confidence: 0.88, count: 1 },
-    ];
-
-    return (results.length ? results : fallback)
-      .sort((a, b) => Math.abs(b.score) - Math.abs(a.score))
-      .slice(0, 8);
-  }, [alerts]);
-
-  const timeline = useMemo<TimelinePoint[]>(() => {
-    const buckets = new Map<string, TimelinePoint>();
-    for (const alert of alerts) {
-      const d = new Date(alert.receivedAt);
-      const label = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' }).format(d);
-      const current = buckets.get(label) ?? { label, sortKey: d.getTime(), alerts: 0, macro: 0, target: 0, sector: 0, general: 0, confidence: 0 };
-      current.alerts += 1;
-      current.confidence += alert.confidence;
-      if (alert.type !== 'general') current[alert.type] += 1;
-      else current.general += 1;
-      buckets.set(label, current);
-    }
-
-    const list = Array.from(buckets.values())
-      .sort((a, b) => a.sortKey - b.sortKey);
-
-    if (list.length >= 2) return list.slice(-8);
-
-    return [
-      { label: 'Mon', sortKey: 1, alerts: 2, macro: 1, target: 1, sector: 0, general: 0, confidence: 1.8 },
-      { label: 'Tue', sortKey: 2, alerts: 3, macro: 1, target: 1, sector: 1, general: 0, confidence: 2.6 },
-      { label: 'Wed', sortKey: 3, alerts: 2, macro: 0, target: 1, sector: 1, general: 0, confidence: 1.9 },
-      { label: 'Thu', sortKey: 4, alerts: 4, macro: 1, target: 1, sector: 2, general: 0, confidence: 3.3 },
-      { label: 'Fri', sortKey: 5, alerts: 3, macro: 1, target: 1, sector: 1, general: 0, confidence: 2.7 },
-    ];
-  }, [alerts]);
-
-  const volume = timeline.reduce((sum, point) => sum + point.alerts, 0);
-  const avgConfidence = alerts.length ? alerts.reduce((sum, a) => sum + a.confidence, 0) / alerts.length : 0;
+  const selectedAlert = alerts.find((alert) => alert.id === selectedAlertId) ?? null;
+  const alpha = buildAlpha(alerts);
+  const heatmap = buildHeatmap(alerts);
+  const timeline = buildTimeline(alerts);
+  const sectors = Array.from(new Set(alerts.flatMap((alert) => alert.sectors))).slice(0, 5);
+  const correlation = buildCorrelation(alerts);
+  const macro = alerts.find((alert) => alert.type === 'macro');
+  const avgConfidence = alerts.length ? Math.round((alerts.reduce((sum, item) => sum + item.confidence, 0) / alerts.length) * 100) : 0;
   const liveBadge = connection === 'live' ? 'Live' : connection === 'polling' ? 'Polling fallback' : 'Connecting';
 
-  const topTickers = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const alert of alerts) {
-      for (const ticker of alert.tickers) counts.set(ticker, (counts.get(ticker) ?? 0) + 1);
-    }
-    return Array.from(counts.entries()).sort((a, b) => b[1] - a[1]).slice(0, 6);
-  }, [alerts]);
+  const topTickers = Array.from(
+    alerts.flatMap((item) => item.tickers).reduce((map, ticker) => map.set(ticker, (map.get(ticker) ?? 0) + 1), new Map<string, number>())
+  )
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5);
 
-  const signalSummary = [
-    { label: 'Macro', value: macro ? macro.subject : 'Awaiting shock headline', tone: macro?.marketBias ?? 'mixed' },
-    { label: 'Sector', value: sector ? sector.subject : 'Awaiting sector tape', tone: sector?.marketBias ?? 'mixed' },
-    { label: 'Analyst', value: target ? target.subject : 'Awaiting target revision', tone: target?.marketBias ?? 'mixed' },
-  ] as const;
+  const width = 460;
+  const height = 150;
+  const padding = 18;
+  const xAt = (i: number) => padding + ((width - padding * 2) * i) / Math.max(1, timeline.length - 1);
+  const yCount = (value: number) => padding + (height - padding * 2) * (1 - value / Math.max(1, ...timeline.map((point) => point.alerts)));
+  const yConfidence = (value: number) => padding + (height - padding * 2) * (1 - value / Math.max(1, ...timeline.map((point) => point.confidence)));
+  const countPath = chartPath(timeline, (point) => point.alerts, height);
+  const confidencePath = chartPath(timeline, (point) => point.confidence, height);
 
   return (
-    <main className="shell">
-      <section className="hero">
+    <main className="shell exec-shell">
+      <section className="hero hero-tight">
         <div className="topbar">
           <div>
-            <div className="kicker">FactSet email ingestion dashboard</div>
-            <h1 className="title">A cleaner market command center for live FactSet alerts.</h1>
-            <p className="sub">
-              Faster scanning, better hierarchy, and richer visuals: trend lines for incoming alert volume, sector heatmaps for relative strength,
-              and a priority feed that keeps the newest market-moving emails front and center. Updates still arrive in real time through the SSE stream.
+            <div className="kicker">FactSet market command center</div>
+            <h1>Executive dashboard for live market alerts.</h1>
+            <p>
+              A dense, single-pane market surface that translates FactSet alerts into plain-English action items, validated effect chains, and trader tools.
             </p>
           </div>
           <div className="chips">
             <span className="chip">Source: FactSet Alerts</span>
-            <span className="chip">Delivery: SSE + serverless ingest</span>
+            <span className="chip">Delivery: SSE + ingest validation</span>
             <span className="chip">State: {liveBadge}</span>
           </div>
         </div>
 
         <div className="metric-grid">
           <div className="metric">
-            <div className="label">Live alerts</div>
-            <div className="value">{alerts.length}</div>
-            <div className="delta up">{volume} total items in the timeline</div>
+            <div className="metric-label">Live alerts</div>
+            <div className="metric-value">{alerts.length}</div>
+            <div className="metric-sub">{alerts.length ? 'Incoming feed active' : 'Waiting for first update'}</div>
           </div>
           <div className="metric">
-            <div className="label">Average conviction</div>
-            <div className="value">{Math.round(avgConfidence * 100)}%</div>
-            <div className={`delta ${avgConfidence > 0.9 ? 'up' : 'flat'}`}>normalized across all incoming alerts</div>
+            <div className="metric-label">Average conviction</div>
+            <div className="metric-value">{avgConfidence}%</div>
+            <div className={`metric-sub ${avgConfidence > 90 ? 'up' : 'flat'}`}>validated across alert chains</div>
           </div>
           <div className="metric">
-            <div className="label">Market bias</div>
-            <div className="value">{macro?.marketBias === 'risk-off' ? 'Risk-off' : macro?.marketBias === 'risk-on' ? 'Risk-on' : 'Mixed'}</div>
-            <div className={`delta ${biasTone(macro?.marketBias ?? 'mixed')}`}>{macro?.subject ?? 'Waiting for the next macro alert'}</div>
+            <div className="metric-label">Macro bias</div>
+            <div className="metric-value">{macro?.marketBias === 'risk-off' ? 'Risk-off' : macro?.marketBias === 'risk-on' ? 'Risk-on' : 'Mixed'}</div>
+            <div className={`metric-sub ${biasTone(macro?.marketBias ?? 'mixed')}`}>{macro ? lensFor(macro).title : 'No macro alert yet'}</div>
           </div>
           <div className="metric">
-            <div className="label">Updated</div>
-            <div className="value">{updatedAt ? shortDay(updatedAt) : 'Now'}</div>
-            <div className="delta up">{updatedAt ? fmt(updatedAt) : 'Listening to the stream'}</div>
+            <div className="metric-label">Updated</div>
+            <div className="metric-value">{updatedAt ? dayLabel(updatedAt) : 'Now'}</div>
+            <div className="metric-sub">{updatedAt ? fmt(updatedAt) : 'Listening to the stream'}</div>
           </div>
         </div>
       </section>
 
-      <div className="grid cols-main">
+      <div className="grid top-grid">
         <section className="panel">
           <div className="panel-hd">
             <div>
-              <h2 className="panel-title">Trend lines</h2>
-              <p className="panel-sub">Alert volume, sector intensity, and confidence over recent ingestions.</p>
+              <h2 className="panel-title">Effect chain map</h2>
+              <p className="panel-sub">Every chain is validated against the incoming FactSet text before it appears here.</p>
             </div>
             <div className="legend-row">
               <span><i className="legend alerts" /> Alerts</span>
-              <span><i className="legend macro" /> Macro</span>
-              <span><i className="legend target" /> Target</span>
-              <span><i className="legend sector" /> Sector</span>
               <span><i className="legend confidence" /> Confidence</span>
             </div>
           </div>
           <div className="panel-bd chart-panel">
-            <TrendSparkline points={timeline} />
+            <svg viewBox={`0 0 ${width} ${height}`} className="trend-chart" aria-label="Trend lines for the live FactSet feed">
+              {Array.from({ length: 5 }, (_, i) => padding + ((height - padding * 2) / 4) * i).map((y) => (
+                <line key={y} x1={padding} x2={width - padding} y1={y} y2={y} className="chart-grid" />
+              ))}
+              {Array.from({ length: 6 }, (_, i) => padding + ((width - padding * 2) / 5) * i).map((x) => (
+                <line key={x} y1={padding} y2={height - padding} x1={x} x2={x} className="chart-grid subtle" />
+              ))}
+              <polyline points={countPath} className="trend-line trend-alerts" />
+              <polyline points={confidencePath} className="trend-line trend-confidence" />
+              {timeline.map((point, index) => (
+                <circle key={point.label} cx={xAt(index)} cy={yCount(point.alerts)} r={3} className="trend-dot" />
+              ))}
+            </svg>
             <div className="timeline-labels">
-              {timeline.map((point) => <span key={point.label}>{point.label}</span>)}
+              {timeline.map((point) => (
+                <span key={point.label}>{point.label}</span>
+              ))}
             </div>
           </div>
         </section>
@@ -361,30 +561,26 @@ export default function Page() {
           <div className="panel-hd">
             <div>
               <h2 className="panel-title">Sector heatmap</h2>
-              <p className="panel-sub">Relative heat from the alerts being ingested right now.</p>
+              <p className="panel-sub">Relative heat from the live alerts.</p>
             </div>
           </div>
-          <div className="panel-bd heatmap-grid">
-            {sectors.map((sectorPoint) => <MiniHeatCell key={sectorPoint.name} {...sectorPoint} />)}
+          <div className="panel-bd heatmap-grid-wrap">
+            <Heatmap points={heatmap} />
           </div>
         </section>
       </div>
 
-      <div className="grid cols-main three-col">
-        <section className="panel spotlight">
+      <div className="grid middle-grid">
+        <section className="panel spotlight-panel">
           <div className="panel-hd">
             <div>
               <h2 className="panel-title">Priority insights</h2>
-              <p className="panel-sub">The three highest-priority lanes from the current feed.</p>
+              <p className="panel-sub">Click any card to open the validated effect chain.</p>
             </div>
           </div>
           <div className="panel-bd spotlight-grid">
-            {signalSummary.map((item) => (
-              <div key={item.label} className="spot-card">
-                <div className={`badge ${item.label.toLowerCase()}`}>{item.label}</div>
-                <h3>{item.value}</h3>
-                <div className={`spot-tone ${biasTone(item.tone)}`}>{item.tone === 'risk-on' ? 'Risk-on' : item.tone === 'risk-off' ? 'Risk-off' : 'Mixed'}</div>
-              </div>
+            {alpha.map(({ alert, lens }) => (
+              <CardButton key={alert.id} alert={alert} lens={lens} onOpen={() => setSelectedAlertId(alert.id)} />
             ))}
             <div className="spot-card wide">
               <div className="badge general">Ticker concentration</div>
@@ -396,15 +592,18 @@ export default function Page() {
                         <em>{count}</em>
                       </span>
                     ))
-                  : ['WTI', 'XLE', 'REXR', 'JAN', 'SNDA', 'WSR'].map((ticker) => (
-                      <span key={ticker} className="ticker-chip"><strong>{ticker}</strong><em>0</em></span>
+                  : ['WTI', 'XLE', 'REXR', 'JAN', 'SNDA'].map((ticker) => (
+                      <span key={ticker} className="ticker-chip">
+                        <strong>{ticker}</strong>
+                        <em>0</em>
+                      </span>
                     ))}
               </div>
             </div>
           </div>
         </section>
 
-        <section className="panel">
+        <section className="panel status-panel">
           <div className="panel-hd">
             <div>
               <h2 className="panel-title">Realtime status</h2>
@@ -414,7 +613,7 @@ export default function Page() {
           <div className="panel-bd">
             <div className="status-stack">
               <div className="status-row"><strong>Transport</strong><span>{liveBadge}</span></div>
-              <div className="status-row"><strong>Source</strong><span>FactSet Alerts ingest route</span></div>
+              <div className="status-row"><strong>Validated chains</strong><span>{selectedAlert ? selectedAlert.chainValidation.verifiedCount : alerts.reduce((sum, item) => sum + item.chainValidation.verifiedCount, 0)}</span></div>
               <div className="status-row"><strong>Update mode</strong><span>Server-sent events + fallback polling</span></div>
               <div className="status-row"><strong>Last sync</strong><span>{updatedAt ? fmt(updatedAt) : 'Awaiting first update'}</span></div>
             </div>
@@ -428,47 +627,76 @@ export default function Page() {
         </section>
       </div>
 
-      <div className="grid cols-feed">
-        <section className="panel">
+      <div className="grid bottom-grid">
+        <section className="panel feed-panel">
           <div className="panel-hd">
             <div>
-              <h2 className="panel-title">Live feed</h2>
-              <p className="panel-sub">Newest FactSet items first with search and type filters.</p>
+              <h2 className="panel-title">Realtime feed</h2>
+              <p className="panel-sub">Newest alerts first, compact and searchable.</p>
             </div>
           </div>
-          <div className="panel-bd">
-            <input className="searchbar" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search tickers, sectors, headlines, or keywords" />
-            <div style={{ height: 12 }} />
-            <div className="tabs">
-              {tabs.map((t) => (
-                <button key={t} className={`tab ${tab === t ? 'active' : ''}`} onClick={() => setTab(t)}>
-                  {t === 'all' ? 'All' : t[0].toUpperCase() + t.slice(1)}
-                </button>
-              ))}
+          <div className="panel-bd feed-panel-body">
+            <div className="search-row">
+              <input className="searchbar" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search headlines, sectors, tickers" />
+              <div className="tabs-row">
+                {tabs.map((item) => (
+                  <button key={item} className={`tab ${tab === item ? 'active' : ''}`} onClick={() => setTab(item)}>
+                    {item === 'all' ? 'All' : item[0].toUpperCase() + item.slice(1)}
+                  </button>
+                ))}
+              </div>
             </div>
-            <div style={{ height: 16 }} />
-            <div className="feed">
-              {filtered.map((item) => <AlertCard key={item.id} item={item} />)}
-              {filtered.length === 0 && <div className="card"><p>No alerts matched the current search.</p></div>}
+            <div className="feed-list">
+              {filtered.slice(0, 3).map((alert) => (
+                <FeedCard key={alert.id} alert={alert} onOpen={() => setSelectedAlertId(alert.id)} />
+              ))}
+              {filtered.length === 0 && <div className="card empty-card"><p>No alerts matched the current search.</p></div>}
             </div>
           </div>
         </section>
 
-        <section className="panel">
+        <section className="panel trader-panel">
           <div className="panel-hd">
             <div>
-              <h2 className="panel-title">How it reads incoming mail</h2>
-              <p className="panel-sub">A cleaner explanation of the live classification rules.</p>
+              <h2 className="panel-title">Trader tools</h2>
+              <p className="panel-sub">Correlation map and market wiring.</p>
             </div>
           </div>
-          <div className="panel-bd rules-grid">
-            <div className="rule-card"><div className="badge macro">Macro</div><p>Detect Hormuz, blockade, Iran, oil, and shipping terms; mark as a broad risk-off shock.</p></div>
-            <div className="rule-card"><div className="badge sector">Sector</div><p>Recognize sector scorecards, rotation summaries, and relative strength / laggard language.</p></div>
-            <div className="rule-card"><div className="badge target">Analyst</div><p>Capture upgrades, downgrades, targets, and initiations, then tie them to the affected tickers.</p></div>
-            <div className="rule-card"><div className="badge general">Realtime</div><p>Ingested alerts are streamed through the serverless endpoint and pushed to the UI without refresh.</p></div>
+          <div className="panel-bd tools-stack">
+            <div className="tool-box">
+              <div className="tool-title">Trend lines</div>
+              <svg viewBox={`0 0 ${width} ${height}`} className="trend-chart" aria-label="Trend chart">
+                <line x1={18} y1={18} x2={18} y2={132} className="chart-axis" />
+                <line x1={18} y1={132} x2={442} y2={132} className="chart-axis" />
+                <polyline points={countPath} className="trend-line trend-count" />
+                <polyline points={confidencePath} className="trend-line trend-confidence" />
+                {timeline.map((point, index) => (
+                  <circle key={point.label} cx={xAt(index)} cy={yCount(point.alerts)} r={3} className="trend-dot" />
+                ))}
+              </svg>
+              <div className="timeline-labels">
+                {timeline.map((point) => (
+                  <span key={point.label}>{point.label}</span>
+                ))}
+              </div>
+            </div>
+
+            <div className="tool-box">
+              <div className="tool-title">Correlation</div>
+              <CorrelationMatrix matrix={correlation} sectors={sectors} />
+            </div>
           </div>
         </section>
       </div>
+
+      <section className="footer-strip">
+        <div className="footer-chip">Realtime transport: SSE + polling fallback</div>
+        <div className="footer-chip">Last sync: {updatedAt ? fmt(updatedAt) : 'waiting for stream'}</div>
+        <div className="footer-chip">Top ticker: {topTickers[0]?.[0] ?? 'WTI'}</div>
+        <div className="footer-chip">Chain mode: validated before display</div>
+      </section>
+
+      {selectedAlert && <ChainModal alert={selectedAlert} onClose={() => setSelectedAlertId(null)} />}
     </main>
   );
 }

@@ -277,6 +277,15 @@ function CorrelationMatrix({ matrix, sectors }: { matrix: number[][]; sectors: s
   );
 }
 
+type ChainLike = {
+  id: string;
+  title: string;
+  summary: string;
+  grounding: string[];
+  validationNotes: string[];
+  steps: { label: string; detail: string; evidence: string; theory: string }[];
+};
+
 function ChainModal({
   alert,
   onClose,
@@ -284,7 +293,7 @@ function ChainModal({
   alert: FactSetAlert;
   onClose: () => void;
 }) {
-  const chains = ((alert as any).effectChains ?? []) as any[];
+  const chains = ((alert as { effectChains?: ChainLike[] }).effectChains) ?? [];
   const [selected, setSelected] = useState(0);
 
   useEffect(() => {
